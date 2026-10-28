@@ -1,0 +1,20 @@
+# Node build and dependencies
+node_modules/
+**/node_modules/
+dist/
+**/dist/
+
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+.env.*
+
+# Local audio used during development/validation
+*.wav
+*.mp3
+*.m4a
+*.flac
+*.mp4
