@@ -2,14 +2,18 @@ import { useEffect, useRef, useState, type CSSProperties, type DragEvent } from 
 import { mediaErrorForElement, messageForMediaFailure, openLocalMedia, type LocalMediaSession, type MediaLoadStep } from '../audio/localMedia'
 import { analyzeLocalFile, type AnalysisProgress } from '../analysis/analyzeLocalFile'
 import { analyzeWithLocalBeatNet } from '../analysis/localBeatNet'
-import { basicPitchAdapter } from '../analysis/basicPitchAdapter'
+import { analyzeBasicPitchDetailed } from '../analysis/basicPitchAdapter'
 import { LAYERS, type LayerId } from '../analysis/layers'
 import { LayerAudioGraph, type MixMode } from '../audio/layerAudioGraph'
+import { SeparatedStemPlayback } from '../audio/separatedStemPlayback'
+import { deleteLocalSeparation, separateLocally, type SeparatedStemId, type StemSeparationResult } from '../analysis/demucsAdapter'
 import { countPattern, makeFakeCountBuffers, makeTaPattern, type CountSyllable } from '../audio/fakeVoice'
 import type { AnalysisSummary, MelodyContourPoint } from '../domain/analysis'
+import type { DrumHit, StemActivityInterval, TranscribedNote } from '../domain/musicTimeline'
 import { EnergyTimeline } from './EnergyTimeline'
 import { LayerPracticePanel, type LayerControl } from './LayerPracticePanel'
 import { MelodyAnalysisPanel } from './MelodyAnalysisPanel'
+import { VerticalMusicTimeline } from './VerticalMusicTimeline'
 
 const loadingLabels: Record<MediaLoadStep, string> = {
   checking: 'Checking your file…',
@@ -44,6 +48,10 @@ function App() {
   const guideAudioRef = useRef<AudioContext | null>(null)
   const layerAudioGraphRef = useRef<LayerAudioGraph | null>(null)
   const melodyAbortRef = useRef<AbortController | null>(null)
+  const separationAbortRef = useRef<AbortController | null>(null)
+  const stemPitchAbortRef = useRef<AbortController | null>(null)
+  const separationPlaybackRef = useRef<SeparatedStemPlayback | null>(null)
+  const separationResultRef = useRef<StemSeparationResult | null>(null)
   const guideVolumeRef = useRef(0.6)
   const metronomeVolumeRef = useRef(0.55)
   const loopRef = useRef<{ start: number; end: number } | null>(null)
@@ -56,6 +64,7 @@ function App() {
   const [isBuffering, setIsBuffering] = useState(false)
   const [isDragging, setIsDragging] = useState(false)
   const [musicVolume, setMusicVolume] = useState(0.45)
+  const [playbackSpeed, setPlaybackSpeed] = useState(1)
   const [analysis, setAnalysis] = useState<AnalysisSummary | null>(null)
   const [analysisProgress, setAnalysisProgress] = useState<AnalysisProgress | null>(null)
   const [analysisError, setAnalysisError] = useState('')
@@ -76,14 +85,23 @@ function App() {
   const [loopStart, setLoopStart] = useState<number | null>(null)
   const [loopEnd, setLoopEnd] = useState<number | null>(null)
   const [activeMode, setActiveMode] = useState<'beginner' | 'intermediate' | 'advanced'>('beginner')
-  const [presentationMode, setPresentationMode] = useState<'live' | 'study'>('study')
   const [mixMode, setMixMode] = useState<MixMode>('original')
   const [layerControls, setLayerControls] = useState<Record<LayerId, LayerControl>>(defaultLayerControls)
   const [layerSolo, setLayerSolo] = useState<LayerId | null>(null)
   const [aiMelodyContour, setAiMelodyContour] = useState<MelodyContourPoint[] | null>(null)
+  const [aiNotes, setAiNotes] = useState<TranscribedNote[]>([])
+  const [stemActivity, setStemActivity] = useState<StemActivityInterval[]>([])
+  const [drumHits, setDrumHits] = useState<DrumHit[]>([])
+  const [stemPitchBusy, setStemPitchBusy] = useState(false)
+  const [stemPitchMessage, setStemPitchMessage] = useState('')
   const [melodyBusy, setMelodyBusy] = useState(false)
   const [melodyProgress, setMelodyProgress] = useState(0)
   const [melodyMessage, setMelodyMessage] = useState('')
+  const [separationResult, setSeparationResult] = useState<StemSeparationResult | null>(null)
+  const [separationBusy, setSeparationBusy] = useState(false)
+  const [separationMessage, setSeparationMessage] = useState('')
+  const [separationError, setSeparationError] = useState('')
+  const [stemControls, setStemControls] = useState<Record<SeparatedStemId, { muted: boolean; volume: number }>>({ vocals: { muted: false, volume: 0.75 }, drums: { muted: false, volume: 0.75 }, bass: { muted: false, volume: 0.75 }, other: { muted: false, volume: 0.75 } })
 
   function clearCurrentSession() {
     loadAbortRef.current?.abort()
@@ -92,6 +110,14 @@ function App() {
     analysisAbortRef.current = null
     melodyAbortRef.current?.abort()
     melodyAbortRef.current = null
+    separationAbortRef.current?.abort()
+    separationAbortRef.current = null
+    stemPitchAbortRef.current?.abort()
+    stemPitchAbortRef.current = null
+    if (separationPlaybackRef.current) void separationPlaybackRef.current.dispose()
+    separationPlaybackRef.current = null
+    if (separationResultRef.current) void deleteLocalSeparation(separationResultRef.current.runId)
+    separationResultRef.current = null
     if (layerAudioGraphRef.current) void layerAudioGraphRef.current.dispose()
     layerAudioGraphRef.current = null
     stopGuide()
@@ -124,9 +150,20 @@ function App() {
     setLayerControls(defaultLayerControls())
     setLayerSolo(null)
     setAiMelodyContour(null)
+    setAiNotes([])
+    setStemActivity([])
+    setDrumHits([])
+    setStemPitchBusy(false)
+    setStemPitchMessage('')
+    setPlaybackSpeed(1)
     setMelodyBusy(false)
     setMelodyProgress(0)
     setMelodyMessage('')
+    setSeparationResult(null)
+    setSeparationBusy(false)
+    setSeparationMessage('')
+    setSeparationError('')
+    setStemControls({ vocals: { muted: false, volume: 0.75 }, drums: { muted: false, volume: 0.75 }, bass: { muted: false, volume: 0.75 }, other: { muted: false, volume: 0.75 } })
   }
 
   function runAnalysis(file: File, duration: number) {
@@ -140,6 +177,7 @@ function App() {
     setIsTryingModel(false)
     setAnalysisProgress({ stage: 'Preparing local audio analysis…', progress: 0.02 })
     setAiMelodyContour(null)
+    setAiNotes([])
     setMelodyMessage('')
     const analysisController = new AbortController()
     analysisAbortRef.current = analysisController
@@ -230,9 +268,10 @@ function App() {
     setMelodyProgress(0)
     setMelodyMessage('Checking the optional local Basic Pitch service…')
     try {
-      const points = await basicPitchAdapter.analyze(file, controller.signal, setMelodyProgress)
+      const { contour, notes } = await analyzeBasicPitchDetailed(file, controller.signal, setMelodyProgress)
       if (controller.signal.aborted) return
-      setAiMelodyContour(points)
+      setAiMelodyContour(contour)
+      setAiNotes((current) => [...current.filter((note) => note.track === 'bass-notes' || note.track === 'accompaniment-notes'), ...notes])
       setMelodyMessage('Showing a Basic Pitch note contour. Note strength is approximate and is not calibrated confidence.')
     } catch (failure) {
       if (controller.signal.aborted) return
@@ -249,19 +288,122 @@ function App() {
   function setPracticeMixMode(mode: MixMode) {
     if (!session) return
     try {
-      if (!layerAudioGraphRef.current) {
-        layerAudioGraphRef.current = new LayerAudioGraph(session.element, musicVolume)
-        for (const layer of LAYERS) {
-          layerAudioGraphRef.current.setLayerVolume(layer.id, layerControls[layer.id].volume)
-          layerAudioGraphRef.current.setMuted(layer.id, layerControls[layer.id].muted)
-        }
-        if (layerSolo) layerAudioGraphRef.current.setSolo(layerSolo)
-      }
-      layerAudioGraphRef.current.setMode(mode)
+      const graph = ensureLayerAudioGraph()
+      if (!graph) return
+      graph.setMode(mode)
+      separationPlaybackRef.current?.setEnabled(mode === 'separated')
       setMixMode(mode)
     } catch (failure) {
       setError(failure instanceof Error ? `Layer audio is unavailable in this browser: ${failure.message}` : 'Layer audio is unavailable in this browser.')
       setMixMode('original')
+    }
+  }
+
+  function ensureLayerAudioGraph() {
+    if (!session) return null
+    if (!layerAudioGraphRef.current) {
+      layerAudioGraphRef.current = new LayerAudioGraph(session.element, musicVolume)
+      for (const layer of LAYERS) {
+        layerAudioGraphRef.current.setLayerVolume(layer.id, layerControls[layer.id].volume)
+        layerAudioGraphRef.current.setMuted(layer.id, layerControls[layer.id].muted)
+      }
+      if (layerSolo) layerAudioGraphRef.current.setSolo(layerSolo)
+    }
+    return layerAudioGraphRef.current
+  }
+
+  function setStemControl(id: SeparatedStemId, patch: { muted?: boolean; volume?: number }) {
+    setStemControls((current) => ({ ...current, [id]: { ...current[id], ...patch } }))
+    if (patch.muted !== undefined) separationPlaybackRef.current?.setMuted(id, patch.muted)
+    if (patch.volume !== undefined) separationPlaybackRef.current?.setVolume(id, patch.volume)
+  }
+
+  async function trySeparateStems(): Promise<StemSeparationResult | null> {
+    const file = currentFileRef.current
+    const activeSession = sessionRef.current
+    if (!file || !activeSession) return null
+    separationAbortRef.current?.abort()
+    const controller = new AbortController()
+    separationAbortRef.current = controller
+    setSeparationBusy(true)
+    setSeparationError('')
+    setSeparationMessage('Preparing a local separation…')
+    try {
+      // Create/resume Web Audio during the button gesture so browsers do not block later stem playback.
+      const graph = ensureLayerAudioGraph()
+      if (!graph) throw new Error('The audio playback graph is unavailable.')
+      const result = await separateLocally(file, controller.signal, setSeparationMessage)
+      if (controller.signal.aborted) { void deleteLocalSeparation(result.runId); return null }
+      const player = new SeparatedStemPlayback(activeSession.element, graph.getAudioContext())
+      await player.load(result.stems)
+      const nextStemActivity = player.getActivityIntervals()
+      player.setMasterVolume(musicVolume)
+      if (controller.signal.aborted) { void player.dispose(); void deleteLocalSeparation(result.runId); return null }
+      if (separationPlaybackRef.current) void separationPlaybackRef.current.dispose()
+      if (separationResultRef.current) void deleteLocalSeparation(separationResultRef.current.runId)
+      separationPlaybackRef.current = player
+      separationResultRef.current = result
+      setSeparationResult(result)
+      setStemActivity(nextStemActivity)
+      setDrumHits(result.drumHits)
+      setStemControls({ vocals: { muted: false, volume: 0.75 }, drums: { muted: false, volume: 0.75 }, bass: { muted: false, volume: 0.75 }, other: { muted: false, volume: 0.75 } })
+      setSeparationMessage(`Ready · ${result.modelId} on ${result.device}.`)
+      setPracticeMixMode('separated')
+      return result
+    } catch (failure) {
+      if (!controller.signal.aborted) {
+        const detail = failure instanceof TypeError
+          ? 'The local separation service is not running. Start it using the instructions in README.md.'
+          : failure instanceof Error ? failure.message : 'Local source separation failed.'
+        setSeparationError(detail)
+        setSeparationMessage('')
+      }
+      return null
+    } finally {
+      if (separationAbortRef.current === controller) separationAbortRef.current = null
+      setSeparationBusy(false)
+    }
+  }
+
+  async function tryTranscribeStems() {
+    if (!currentFileRef.current) return
+    stemPitchAbortRef.current?.abort()
+    const controller = new AbortController()
+    stemPitchAbortRef.current = controller
+    setStemPitchBusy(true)
+    setStemPitchMessage('Preparing local stem analysis…')
+    try {
+      const separation = separationResultRef.current ?? await trySeparateStems()
+      if (!separation || controller.signal.aborted) {
+        if (!controller.signal.aborted) setStemPitchMessage('Source separation is unavailable; the existing analysis remains visible.')
+        return
+      }
+      const collected: TranscribedNote[] = []
+      const failures: string[] = []
+      for (const id of ['bass', 'other'] as const) {
+        if (controller.signal.aborted) return
+        const stem = separation.stems.find((item) => item.id === id)
+        if (!stem) continue
+        setStemPitchMessage(`Transcribing ${id === 'bass' ? 'bass' : 'accompaniment'} notes with Basic Pitch…`)
+        try {
+          const response = await fetch(stem.url, { signal: controller.signal })
+          if (!response.ok) throw new Error('Stem audio could not be opened')
+          const wav = new File([await response.blob()], `${id}.wav`, { type: 'audio/wav' })
+          const result = await analyzeBasicPitchDetailed(wav, controller.signal)
+          collected.push(...result.notes.map((note) => ({ ...note, track: id === 'bass' ? 'bass-notes' as const : 'accompaniment-notes' as const, source: `basic-pitch-on-demucs-${id}` })))
+        } catch (failure) {
+          if (controller.signal.aborted) return
+          failures.push(`${id}: ${failure instanceof Error ? failure.message : 'analysis failed'}`)
+        }
+      }
+      if (controller.signal.aborted) return
+      setAiNotes((current) => [...current.filter((note) => note.track !== 'bass-notes' && note.track !== 'accompaniment-notes'), ...collected])
+      setStemPitchMessage(`${collected.length} estimated notes from bass and accompaniment stems. ${failures.length ? `Unavailable: ${failures.join('; ')}` : 'Instrument names within accompaniment remain unknown.'}`)
+    } catch (failure) {
+      if (!controller.signal.aborted) setStemPitchMessage(failure instanceof Error ? `Advanced analysis failed: ${failure.message}` : 'Advanced analysis failed.')
+    } finally {
+      if (stemPitchAbortRef.current === controller) stemPitchAbortRef.current = null
+      setStemPitchBusy(false)
     }
   }
 
@@ -348,10 +490,16 @@ function App() {
   useEffect(() => () => {
     loadAbortRef.current?.abort()
     analysisAbortRef.current?.abort()
+    separationAbortRef.current?.abort()
+    stemPitchAbortRef.current?.abort()
     if (guideTimerRef.current !== null) window.clearInterval(guideTimerRef.current)
     void guideAudioRef.current?.close()
     void layerAudioGraphRef.current?.dispose()
     layerAudioGraphRef.current = null
+    void separationPlaybackRef.current?.dispose()
+    separationPlaybackRef.current = null
+    if (separationResultRef.current) void deleteLocalSeparation(separationResultRef.current.runId)
+    separationResultRef.current = null
     sessionRef.current?.dispose()
     sessionRef.current = null
   }, [])
@@ -359,7 +507,16 @@ function App() {
   useEffect(() => {
     if (layerAudioGraphRef.current) layerAudioGraphRef.current.setMasterVolume(musicVolume)
     else if (session) session.element.volume = musicVolume
+    separationPlaybackRef.current?.setMasterVolume(musicVolume)
   }, [session, musicVolume])
+
+  useEffect(() => {
+    if (session) {
+      // BufferSource stems change pitch with rate; match the original audio to that behavior.
+      session.element.preservesPitch = false
+      session.element.playbackRate = playbackSpeed
+    }
+  }, [session, playbackSpeed])
 
   const bpm = manualBpm ?? undefined
   const effectiveFirstBeat = firstBeat ?? undefined
@@ -526,7 +683,7 @@ function App() {
       <header className="topbar">
         <a className="wordmark" href="#top" aria-label="BeatTrace home"><span className="mark">b</span>beattrace</a>
         <div className="topbar-note"><span className="status-dot" /> Music for movement</div>
-      <span className="phase-tag">{activeMode === 'beginner' ? 'BEGINNER MODE' : 'INTERMEDIATE MODE'}</span>
+      <span className="phase-tag">{activeMode.toUpperCase()} MODE</span>
       </header>
 
       <section className="player-intro" id="top">
@@ -587,6 +744,8 @@ function App() {
               <span>{formatTime(session.duration)}</span>
             </div>
             <div className="music-volume-row"><label htmlFor="music-volume">Music volume <strong>{Math.round(musicVolume * 100)}%</strong></label><input id="music-volume" type="range" min="0" max="1" step="0.01" value={musicVolume} onChange={(event) => setMusicVolume(Number(event.currentTarget.value))} aria-label="Uploaded music volume" /></div>
+            <div className="music-volume-row"><label htmlFor="playback-speed">Practice speed <strong>{playbackSpeed.toFixed(2)}×</strong></label><input id="playback-speed" type="range" min="0.5" max="1.5" step="0.05" value={playbackSpeed} onChange={(event) => setPlaybackSpeed(Number(event.currentTarget.value))} aria-label="Practice playback speed" /></div>
+            <p className="speed-note">Changing speed also changes pitch so the original mix and optional AI stems stay consistent.</p>
           </div>
         )}
       </section>
@@ -599,9 +758,13 @@ function App() {
         {session && <button type="button" className="remove-button" onClick={() => { clearCurrentSession(); mediaHostRef.current?.replaceChildren(); setFileName(''); setError('') }}>Remove audio</button>}
       </section>
 
-      {session && <nav className="mode-tabs" aria-label="Practice mode"><button type="button" className={activeMode === 'beginner' ? 'is-active' : ''} onClick={() => setActiveMode('beginner')}>Beginner mode</button><button type="button" className={activeMode === 'intermediate' ? 'is-active' : ''} onClick={() => setActiveMode('intermediate')}>Intermediate mode</button><button type="button" className={activeMode === 'advanced' ? 'is-active' : ''} onClick={() => setActiveMode('advanced')}>Advanced mode</button><button type="button" className={presentationMode === 'live' ? 'is-active' : ''} onClick={() => setPresentationMode('live')}>Live performance</button><button type="button" className={presentationMode === 'study' ? 'is-active' : ''} onClick={() => setPresentationMode('study')}>Music analysis</button></nav>}
+      {session && <nav className="mode-tabs" aria-label="Practice mode"><button type="button" className={activeMode === 'beginner' ? 'is-active' : ''} onClick={() => setActiveMode('beginner')}>Beginner mode</button><button type="button" className={activeMode === 'intermediate' ? 'is-active' : ''} onClick={() => setActiveMode('intermediate')}>Intermediate mode</button><button type="button" className={activeMode === 'advanced' ? 'is-active' : ''} onClick={() => setActiveMode('advanced')}>Advanced mode</button></nav>}
 
-      {session && activeMode === 'beginner' && presentationMode === 'study' && <section className="beginner-panel" aria-label="Beginner practice tools">
+      {session && analysis && activeMode === 'advanced' && <section className="advanced-model-actions"><div><span className="track-eyebrow">ADVANCED ANALYSIS</span><h2>Drums and pitched layers</h2><p>Run local Demucs to estimate kick, snare, hi-hat and other drum attacks, then Basic Pitch on the bass and accompaniment stems. Drum categories use spectral rules, and accompaniment instruments are not individually identified.</p></div><button className="secondary-button" type="button" onClick={() => void tryTranscribeStems()} disabled={stemPitchBusy || separationBusy}>{stemPitchBusy ? 'Analyzing locally…' : 'Analyze musical details'}</button>{stemPitchBusy && <button className="secondary-button" type="button" onClick={() => { stemPitchAbortRef.current?.abort(); separationAbortRef.current?.abort(); setStemPitchMessage('Advanced analysis cancelled.') }}>Cancel</button>}{stemPitchMessage && <p className="model-status" role="status">{stemPitchMessage}</p>}</section>}
+
+      {session && analysis && activeMode === 'advanced' && <VerticalMusicTimeline summary={analysis} notes={aiNotes} stemActivity={stemActivity} drumHits={drumHits} media={session.element} onSeek={(seconds) => seek(String(seconds))} loop={loopStart !== null && loopEnd !== null ? { start: loopStart, end: loopEnd } : null} />}
+
+      {session && activeMode === 'beginner' && <section className="beginner-panel" aria-label="Beginner practice tools">
         <div className="section-heading"><div><span className="track-eyebrow">BEGINNER MODE</span><h2>Find a pulse. Make it yours.</h2></div><span className="analysis-badge">{analysis?.mode === 'local-model' ? 'LOCAL AI · BEATNET' : analysis?.mode === 'cloud-model' ? 'CLOUD AI' : analysis ? 'TRADITIONAL DSP' : analysisProgress ? 'ANALYZING' : 'READY'}</span></div>
         {analysisProgress && <div className="analysis-progress" role="status"><span>{analysisProgress.stage}</span><span>{analysisProgress.progress === null ? '…' : `${Math.round(analysisProgress.progress * 100)}%`}</span><button type="button" className="text-button" onClick={cancelAnalysis}>Cancel</button><div><i style={{ width: `${Math.round((analysisProgress.progress ?? 0.08) * 100)}%` }} /></div></div>}
         {analysisError && <div className="analysis-error" role="alert"><span>{analysisError}</span><button type="button" onClick={() => { if (currentFileRef.current && session) runAnalysis(currentFileRef.current, session.duration) }}>Retry analysis</button><button type="button" onClick={() => setAnalysisError('')}>Dismiss</button></div>}
@@ -624,19 +787,17 @@ function App() {
         </>}
       </section>}
 
-      {session && activeMode === 'intermediate' && presentationMode === 'study' && analysis && <section className="beginner-panel intermediate-section" aria-label="Intermediate layer practice">
+      {session && activeMode === 'intermediate' && analysis && <section className="beginner-panel intermediate-section" aria-label="Intermediate layer practice">
         <div className="section-heading"><div><span className="track-eyebrow">INTERMEDIATE MODE</span><h2>Estimated musical layers</h2></div><span className="analysis-badge">FREQUENCY APPROXIMATION</span></div>
-        <LayerPracticePanel summary={analysis} currentTime={currentTime} controls={layerControls} setControl={updateLayerControl} mode={mixMode} setMode={setPracticeMixMode} solo={layerSolo} toggleSolo={toggleLayerSolo} reset={resetLayerMix} masterVolume={musicVolume} onA={() => setPracticeMixMode(mixMode === 'original' ? 'layers' : 'original')} />
+        <LayerPracticePanel summary={analysis} currentTime={currentTime} controls={layerControls} setControl={updateLayerControl} mode={mixMode} setMode={setPracticeMixMode} solo={layerSolo} toggleSolo={toggleLayerSolo} reset={resetLayerMix} masterVolume={musicVolume} onA={() => setPracticeMixMode(mixMode === 'original' ? 'layers' : 'original')} onSeparate={() => void trySeparateStems()} separationBusy={separationBusy} separationMessage={separationMessage} separationError={separationError} separated={Boolean(separationResult)} stemControls={stemControls} setStemControl={setStemControl} />
       </section>}
 
       {session && activeMode === 'intermediate' && !analysis && analysisProgress && <section className="beginner-panel" aria-live="polite"><p className="model-status">{analysisProgress.stage} · {Math.round((analysisProgress.progress ?? 0) * 100)}%</p><button type="button" className="secondary-button" onClick={cancelAnalysis}>Cancel analysis</button></section>}
 
-      {session && analysis && presentationMode === 'study' && (activeMode === 'advanced' || activeMode === 'beginner' || activeMode === 'intermediate') && <FullSongStructure summary={analysis} currentTime={currentTime} onSeek={(seconds) => seek(String(seconds))} />}
-      {session && analysis && activeMode === 'advanced' && presentationMode === 'study' && <section className="advanced-events"><h2>Upcoming musical events</h2><p>These cues come from pre-analysis of this file. They are estimates, not predictions of unknown audio.</p>{analysis.events.filter((event) => event.timestamp >= currentTime - 1).slice(0, 12).map((event) => <button type="button" key={event.id} onClick={() => seek(String(event.timestamp))}><strong>{Math.abs(event.timestamp - currentTime) <= 1 ? 'CURRENT' : 'UPCOMING'}</strong><span>{event.section ?? event.type.replace('-', ' ')}</span><small>{event.timestamp.toFixed(1)}s{event.confidence === undefined ? ' · estimated' : ` · approx. ${Math.round(event.confidence * 100)}%`}</small></button>)}</section>}
+      {session && analysis && activeMode === 'advanced' && <FullSongStructure summary={analysis} currentTime={currentTime} onSeek={(seconds) => seek(String(seconds))} />}
+      {session && analysis && activeMode === 'advanced' && <section className="advanced-events"><h2>Upcoming musical events</h2><p>These cues come from pre-analysis of this file. They are estimates, not predictions of unknown audio.</p>{analysis.events.filter((event) => event.timestamp >= currentTime - 1).slice(0, 12).map((event) => <button type="button" key={event.id} onClick={() => seek(String(event.timestamp))}><strong>{Math.abs(event.timestamp - currentTime) <= 1 ? 'CURRENT' : 'UPCOMING'}</strong><span>{event.section ?? event.type.replace('-', ' ')}</span><small>{event.timestamp.toFixed(1)}s{event.confidence === undefined ? ' · estimated' : ` · approx. ${Math.round(event.confidence * 100)}%`}</small></button>)}</section>}
 
-      {session && analysis && presentationMode === 'live' && <section className="live-focus" aria-label="Live performance focus"><span className="track-eyebrow">LIVE PERFORMANCE · CURRENT MUSIC</span><strong>{beatIndex ? `Beat ${beatIndex} · ${displayedMeasure ? `Measure ${displayedMeasure}` : 'pulse'}` : 'Listen for the pulse'}</strong><span>{analysis.events.filter((event) => event.timestamp > currentTime && event.timestamp <= currentTime + 8).slice(0, 2).map((event) => event.section ?? event.type.replace('-', ' ')).join(' · ') || 'No estimated event in the next 8 seconds'}</span></section>}
-
-      {session && analysis && activeMode !== 'beginner' && presentationMode === 'study' && <MelodyAnalysisPanel summary={analysis} currentTime={currentTime} modelContour={aiMelodyContour} busy={melodyBusy} progress={melodyProgress} message={melodyMessage} onAnalyze={() => void tryBasicPitch()} onCancel={cancelMelodyAnalysis} />}
+      {session && analysis && activeMode !== 'beginner' && <MelodyAnalysisPanel summary={analysis} currentTime={currentTime} modelContour={aiMelodyContour} busy={melodyBusy} progress={melodyProgress} message={melodyMessage} onAnalyze={() => void tryBasicPitch()} onCancel={cancelMelodyAnalysis} />}
 
       <section className="phase-note"><span className="phase-note-number">06–17</span><p><strong>Estimated musical structure and melody contour.</strong> Frequency layers are not isolated instruments, and pitch or event timing can be uncertain in dense mixes. Use these cues as practice aids.</p></section>
       <footer className="footer"><span>BEATTRACE <span className="footer-dot">·</span> MUSIC FOR MOVEMENT</span><span>Understand the music. Make it your own.</span></footer>

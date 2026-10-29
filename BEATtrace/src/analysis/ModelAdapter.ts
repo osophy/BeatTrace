@@ -51,7 +51,7 @@ export function normalizeModelResult(
     meterNumerator: isValidMeter(result.meterNumerator) ? result.meterNumerator : baseline?.meterNumerator,
     meterDenominator: isValidMeter(result.meterDenominator) ? result.meterDenominator : baseline?.meterDenominator,
     mode,
-    events: [...(baseline?.events ?? []).filter((event) => event.type !== 'beat' && event.type !== 'downbeat'), ...events],
+    events: [...(baseline?.events ?? []).filter((event) => event.type !== 'beat' && event.type !== 'downbeat'), ...events].sort((a, b) => a.timestamp - b.timestamp),
     frames: baseline?.frames ?? [],
     generatedAt: new Date().toISOString(),
   }

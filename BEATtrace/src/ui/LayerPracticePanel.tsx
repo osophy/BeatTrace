@@ -2,6 +2,7 @@ import type { CSSProperties } from 'react'
 import type { AnalysisSummary } from '../domain/analysis'
 import { deriveLayerSignals, LAYERS, type LayerId, type LayerPoint } from '../analysis/layers'
 import type { MixMode } from '../audio/layerAudioGraph'
+import type { SeparatedStemId } from '../analysis/demucsAdapter'
 
 export interface LayerControl {
   visible: boolean
@@ -23,7 +24,21 @@ interface Props {
   reset: () => void
   masterVolume: number
   onA: () => void
+  onSeparate: () => void
+  separationBusy: boolean
+  separationMessage: string
+  separationError: string
+  separated: boolean
+  stemControls: Record<SeparatedStemId, { muted: boolean; volume: number }>
+  setStemControl: (id: SeparatedStemId, patch: { muted?: boolean; volume?: number }) => void
 }
+
+const stemRows: Array<{ id: SeparatedStemId; label: string; detail: string }> = [
+  { id: 'vocals', label: 'Vocals', detail: 'Estimated vocal stem' },
+  { id: 'drums', label: 'Drums', detail: 'Estimated drum and percussion stem' },
+  { id: 'bass', label: 'Bass', detail: 'Estimated bass stem' },
+  { id: 'other', label: 'Other accompaniment', detail: 'Residual accompaniment mix, not a single instrument' },
+]
 
 export function LayerPracticePanel(props: Props) {
   const signals = deriveLayerSignals(props.summary)
@@ -32,6 +47,7 @@ export function LayerPracticePanel(props: Props) {
     <div className="layer-mode-actions">
       <button className={props.mode === 'original' ? 'secondary-button is-active' : 'secondary-button'} type="button" onClick={() => props.setMode('original')}>Original mix</button>
       <button className={props.mode === 'layers' ? 'secondary-button is-active' : 'secondary-button'} type="button" onClick={() => props.setMode('layers')}>Layer practice mode</button>
+      {props.separated && <button className={props.mode === 'separated' ? 'secondary-button is-active' : 'secondary-button'} type="button" onClick={() => props.setMode('separated')}>AI stem practice</button>}
       <button className="secondary-button" type="button" onClick={props.onA}>A/B compare</button>
       <button className="secondary-button" type="button" onClick={props.reset}>Reset mix</button>
     </div>
@@ -49,7 +65,11 @@ export function LayerPracticePanel(props: Props) {
         </article>
       })}
     </div>
-    <div className="separation-status"><strong>AI source separation is not installed.</strong><span>These frequency-based estimates remain available without AI. No vocal, drum, or bass stem is being presented as isolated audio.</span></div>
+    <div className="separation-status"><strong>AI source separation · local Demucs</strong><span>Analyze creates estimated vocals, drums, bass, and residual accompaniment stems on this computer. Models can leak sounds between stems or add artifacts; it does not identify every instrument.</span>
+      <div className="layer-mode-actions"><button type="button" className="secondary-button" onClick={props.onSeparate} disabled={props.separationBusy}>{props.separationBusy ? 'Separating…' : props.separated ? 'Analyze again' : 'Analyze locally'}</button>{props.separated && <button type="button" className={props.mode === 'separated' ? 'secondary-button is-active' : 'secondary-button'} onClick={() => props.setMode('separated')}>Listen to AI stems</button>}</div>
+      {props.separationMessage && <span role="status">{props.separationMessage}</span>}{props.separationError && <span role="alert">{props.separationError}</span>}
+      {props.separated && <><p className="approximation-notice">AI stems are model estimates. They stay aligned to the original playback controls. Downloaded stem audio is held in browser memory while this track is open.</p><div className="layer-cards ai-stem-cards">{stemRows.map((stem) => { const control = props.stemControls[stem.id]; return <article className="layer-card" key={stem.id}><div className="layer-card-head"><strong>{stem.label}</strong><span>{stem.detail}</span></div><div className="layer-card-actions"><button type="button" className={control.muted ? 'secondary-button is-active' : 'secondary-button'} onClick={() => props.setStemControl(stem.id, { muted: !control.muted })}>{control.muted ? 'Muted' : 'Mute'}</button></div><label className="layer-slider"><span>Stem volume</span><strong>{Math.round(control.volume * 100)}%</strong><input type="range" min="0" max="1" step="0.01" value={control.volume} onChange={(event) => props.setStemControl(stem.id, { volume: Number(event.currentTarget.value) })} /></label></article>})}</div></>}
+    </div>
   </div>
 }
 

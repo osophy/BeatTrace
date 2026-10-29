@@ -1,6 +1,6 @@
 import type { LayerId } from '../analysis/layers'
 
-export type MixMode = 'original' | 'layers'
+export type MixMode = 'original' | 'layers' | 'separated'
 
 const filters: Record<LayerId, { type: BiquadFilterType; frequency: number; q: number }> = {
   drums: { type: 'bandpass', frequency: 920, q: 0.65 },
@@ -58,6 +58,8 @@ export class LayerAudioGraph {
     this.masterVolume = clamp(value, 0, 1)
     this.applyMode()
   }
+
+  getAudioContext() { return this.context }
 
   private masterVolume = 0.45
 

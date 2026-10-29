@@ -16,7 +16,7 @@ The [Basic Pitch project](https://github.com/spotify/basic-pitch) is Apache-2.0.
 
 - Advanced Mode displays a 48-bucket full-song energy/density overview, neutral Sections A–F, a focused current window, and estimated event list.
 - Current playback position, focus window, silence, and event timing are represented on the timeline. Upcoming cues come from pre-analysis of the loaded file, not from predictions of unheard music.
-- Live Performance emphasizes the current beat and nearby events; Music Analysis keeps the study panels. Switching modes preserves the media element, position, and analysis.
+- Current layout (updated 2026-10-30): the separate Live Performance view was removed. The moving event timeline is visible only in Advanced Mode; switching practice modes preserves the media element, position, and analysis.
 - Existing visual channels remain distinct: beat flashes and markers, low/mid/high curves, silence regions, layer traces with separate colors, and a broken melody contour. The timeline is capped at 900 sampled frames for rendering; layer traces use the same bounded view.
 - Semantic section names such as Verse/Chorus/Bridge are intentionally absent. Neutral labels and estimates are used because semantic recognition is not implemented.
 

@@ -1,4 +1,5 @@
 import type { MelodyContourPoint } from '../domain/analysis'
+import type { TranscribedNote } from '../domain/musicTimeline'
 import type { MelodyContourAdapter } from './OptionalMusicModels'
 
 interface BasicPitchResponse {
@@ -15,6 +16,11 @@ const REQUEST_TIMEOUT_MS = 120_000
 export const basicPitchAdapter: MelodyContourAdapter = {
   id: 'spotify-basic-pitch-local',
   async analyze(file, signal, onProgress) {
+    return (await analyzeBasicPitchDetailed(file, signal, onProgress)).contour
+  },
+}
+
+export async function analyzeBasicPitchDetailed(file: File, signal: AbortSignal, onProgress?: (fraction: number) => void): Promise<{ contour: MelodyContourPoint[]; notes: TranscribedNote[] }> {
     const controller = new AbortController()
     const abort = () => controller.abort()
     signal.addEventListener('abort', abort, { once: true })
@@ -49,7 +55,7 @@ export const basicPitchAdapter: MelodyContourAdapter = {
         points.push({ timestamp: Number(timestamp.toFixed(3)), midi: melody.midi, confidence: clamp(melody.velocity, 0, 1), energy: clamp(melody.velocity, 0, 1), source: 'basic-pitch' })
       }
       if (!points.length) throw new Error('Basic Pitch found no reliable note events. The spectral contour remains available.')
-      return points
+      return { contour: points, notes: notes.map((note) => ({ startSeconds: note.startSeconds, endSeconds: note.endSeconds, midi: note.midi, strength: clamp(note.velocity, 0, 1) })) }
     } catch (error) {
       if (signal.aborted) throw new DOMException('Melody analysis cancelled', 'AbortError')
       if (error instanceof DOMException && error.name === 'AbortError') throw new Error('Basic Pitch timed out. The spectral contour remains available.')
@@ -58,7 +64,6 @@ export const basicPitchAdapter: MelodyContourAdapter = {
       window.clearTimeout(timeout)
       signal.removeEventListener('abort', abort)
     }
-  },
 }
 
 function clamp(value: number, min: number, max: number) {
