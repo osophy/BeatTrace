@@ -27,7 +27,7 @@ Track provided by participant (format/duration only): ____________________
 | Understand count guide and beat sync | | | |
 | Adjust tempo / tap or nudge alignment | | | |
 | Identify energy/section changes | | | |
-| Understand upcoming-event estimate | | | |
+| Understand upcoming events on the moving timeline | | | |
 | Distinguish the five approximate layers | | | |
 | Solo/mute/volume and return to original mix | | | |
 | Understand the Advanced-only moving timeline | | | |

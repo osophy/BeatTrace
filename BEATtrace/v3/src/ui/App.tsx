@@ -5,9 +5,11 @@ import { analyzeWithLocalBeatNet } from '../analysis/localBeatNet'
 import { analyzeBasicPitchDetailed } from '../analysis/basicPitchAdapter'
 import { LAYERS, type LayerId } from '../analysis/layers'
 import { LayerAudioGraph, type MixMode } from '../audio/layerAudioGraph'
+import { muteLayer, toggleLayerMute, withLayerVolume } from '../audio/layerMixState'
+import { defaultStemControls, type StemControl } from '../audio/stemMixState'
 import { SeparatedStemPlayback } from '../audio/separatedStemPlayback'
 import { deleteLocalSeparation, separateLocally, type SeparatedStemId, type StemSeparationResult } from '../analysis/demucsAdapter'
-import { countPattern, makeFakeCountBuffers, makeTaPattern, type CountSyllable } from '../audio/fakeVoice'
+import { countPattern, loadCountBuffers, makeMetronomeBuffers, type CountWord } from '../audio/practiceSounds'
 import type { AnalysisSummary, MelodyContourPoint } from '../domain/analysis'
 import type { DrumHit, StemActivityInterval, TranscribedNote } from '../domain/musicTimeline'
 import { EnergyTimeline } from './EnergyTimeline'
@@ -32,7 +34,7 @@ function formatTime(seconds: number): string {
 }
 
 function defaultLayerControls(): Record<LayerId, LayerControl> {
-  return Object.fromEntries(LAYERS.map((layer) => [layer.id, { visible: true, muted: false, volume: 0.3, opacity: 0.82, color: layer.color }])) as Record<LayerId, LayerControl>
+  return Object.fromEntries(LAYERS.map((layer) => [layer.id, { visible: true, muted: false, volume: 0.3, lastNonZeroVolume: 0.3, opacity: 0.82, color: layer.color }])) as Record<LayerId, LayerControl>
 }
 
 function App() {
@@ -77,8 +79,9 @@ function App() {
   const [beatIndex, setBeatIndex] = useState(0)
   const [pattern, setPattern] = useState(4)
   const [subdivision, setSubdivision] = useState(1)
-  const [countStyle, setCountStyle] = useState<'numbers' | 'ta'>('numbers')
   const [guideOn, setGuideOn] = useState(false)
+  const [guideLoading, setGuideLoading] = useState(false)
+  const [guideError, setGuideError] = useState('')
   const [guideVolume, setGuideVolume] = useState(0.6)
   const [metronomeOn, setMetronomeOn] = useState(false)
   const [metronomeVolume, setMetronomeVolume] = useState(0.55)
@@ -88,6 +91,7 @@ function App() {
   const [mixMode, setMixMode] = useState<MixMode>('original')
   const [layerControls, setLayerControls] = useState<Record<LayerId, LayerControl>>(defaultLayerControls)
   const [layerSolo, setLayerSolo] = useState<LayerId | null>(null)
+  const [stemSolo, setStemSolo] = useState<SeparatedStemId | null>(null)
   const [aiMelodyContour, setAiMelodyContour] = useState<MelodyContourPoint[] | null>(null)
   const [aiNotes, setAiNotes] = useState<TranscribedNote[]>([])
   const [stemActivity, setStemActivity] = useState<StemActivityInterval[]>([])
@@ -101,7 +105,7 @@ function App() {
   const [separationBusy, setSeparationBusy] = useState(false)
   const [separationMessage, setSeparationMessage] = useState('')
   const [separationError, setSeparationError] = useState('')
-  const [stemControls, setStemControls] = useState<Record<SeparatedStemId, { muted: boolean; volume: number }>>({ vocals: { muted: false, volume: 0.75 }, drums: { muted: false, volume: 0.75 }, bass: { muted: false, volume: 0.75 }, other: { muted: false, volume: 0.75 } })
+  const [stemControls, setStemControls] = useState<Record<SeparatedStemId, StemControl>>(defaultStemControls)
 
   function clearCurrentSession() {
     loadAbortRef.current?.abort()
@@ -163,7 +167,8 @@ function App() {
     setSeparationBusy(false)
     setSeparationMessage('')
     setSeparationError('')
-    setStemControls({ vocals: { muted: false, volume: 0.75 }, drums: { muted: false, volume: 0.75 }, bass: { muted: false, volume: 0.75 }, other: { muted: false, volume: 0.75 } })
+    setStemControls(defaultStemControls())
+    setStemSolo(null)
   }
 
   function runAnalysis(file: File, duration: number) {
@@ -287,6 +292,7 @@ function App() {
 
   function setPracticeMixMode(mode: MixMode) {
     if (!session) return
+    if (mode === 'separated' && !separationPlaybackRef.current?.available) return
     try {
       const graph = ensureLayerAudioGraph()
       if (!graph) return
@@ -304,18 +310,45 @@ function App() {
     if (!layerAudioGraphRef.current) {
       layerAudioGraphRef.current = new LayerAudioGraph(session.element, musicVolume)
       for (const layer of LAYERS) {
-        layerAudioGraphRef.current.setLayerVolume(layer.id, layerControls[layer.id].volume)
-        layerAudioGraphRef.current.setMuted(layer.id, layerControls[layer.id].muted)
+        layerAudioGraphRef.current.setLayerState(layer.id, layerControls[layer.id])
       }
       if (layerSolo) layerAudioGraphRef.current.setSolo(layerSolo)
     }
     return layerAudioGraphRef.current
   }
 
-  function setStemControl(id: SeparatedStemId, patch: { muted?: boolean; volume?: number }) {
-    setStemControls((current) => ({ ...current, [id]: { ...current[id], ...patch } }))
-    if (patch.muted !== undefined) separationPlaybackRef.current?.setMuted(id, patch.muted)
-    if (patch.volume !== undefined) separationPlaybackRef.current?.setVolume(id, patch.volume)
+  function setStemVolume(id: SeparatedStemId, volume: number) {
+    const next = withLayerVolume(stemControls[id], volume)
+    setStemControls((current) => ({ ...current, [id]: next }))
+    separationPlaybackRef.current?.setStemState(id, next)
+    if (next.muted && stemSolo === id) {
+      setStemSolo(null)
+      separationPlaybackRef.current?.setSolo(null)
+    }
+  }
+
+  function toggleStemMute(id: SeparatedStemId) {
+    const next = stemSolo === id ? muteLayer(stemControls[id]) : toggleLayerMute(stemControls[id])
+    setStemControls((current) => ({ ...current, [id]: next }))
+    separationPlaybackRef.current?.setStemState(id, next)
+    if (stemSolo === id) {
+      setStemSolo(null)
+      separationPlaybackRef.current?.setSolo(null)
+    }
+  }
+
+  function toggleStemSolo(id: SeparatedStemId) {
+    const next = stemSolo === id ? null : id
+    setStemSolo(next)
+    separationPlaybackRef.current?.setSolo(next)
+  }
+
+  function resetStemMix() {
+    const defaults = defaultStemControls()
+    setStemControls(defaults)
+    setStemSolo(null)
+    separationPlaybackRef.current?.setSolo(null)
+    for (const id of Object.keys(defaults) as SeparatedStemId[]) separationPlaybackRef.current?.setStemState(id, defaults[id])
   }
 
   async function trySeparateStems(): Promise<StemSeparationResult | null> {
@@ -346,9 +379,10 @@ function App() {
       setSeparationResult(result)
       setStemActivity(nextStemActivity)
       setDrumHits(result.drumHits)
-      setStemControls({ vocals: { muted: false, volume: 0.75 }, drums: { muted: false, volume: 0.75 }, bass: { muted: false, volume: 0.75 }, other: { muted: false, volume: 0.75 } })
+      setStemControls(defaultStemControls())
+      setStemSolo(null)
       setSeparationMessage(`Ready · ${result.modelId} on ${result.device}.`)
-      setPracticeMixMode('separated')
+      player.setEnabled(mixMode === 'separated')
       return result
     } catch (failure) {
       if (!controller.signal.aborted) {
@@ -375,7 +409,7 @@ function App() {
     try {
       const separation = separationResultRef.current ?? await trySeparateStems()
       if (!separation || controller.signal.aborted) {
-        if (!controller.signal.aborted) setStemPitchMessage('Source separation is unavailable; the existing analysis remains visible.')
+        if (!controller.signal.aborted) setStemPitchMessage('Source separation is unavailable. Start the local AI services with ./scripts/run-local-ai.sh and try again; the existing analysis remains visible.')
         return
       }
       const collected: TranscribedNote[] = []
@@ -407,27 +441,47 @@ function App() {
     }
   }
 
-  function updateLayerControl(id: LayerId, patch: Partial<LayerControl>) {
+  function updateLayerControl(id: LayerId, patch: Partial<Pick<LayerControl, 'visible' | 'opacity' | 'color'>>) {
     setLayerControls((current) => ({ ...current, [id]: { ...current[id], ...patch } }))
-    if (patch.volume !== undefined) layerAudioGraphRef.current?.setLayerVolume(id, patch.volume)
-    if (patch.muted !== undefined) layerAudioGraphRef.current?.setMuted(id, patch.muted)
+  }
+
+  function setLayerVolume(id: LayerId, volume: number) {
+    const next = withLayerVolume(layerControls[id], volume)
+    setLayerControls((current) => ({ ...current, [id]: next }))
+    const graph = ensureLayerAudioGraph()
+    graph?.setLayerState(id, next)
+    if (next.muted && layerSolo === id) {
+      setLayerSolo(null)
+      graph?.setSolo(null)
+    }
+  }
+
+  function toggleLayerMuteControl(id: LayerId) {
+    const next = layerSolo === id ? muteLayer(layerControls[id]) : toggleLayerMute(layerControls[id])
+    setLayerControls((current) => ({ ...current, [id]: next }))
+    const graph = ensureLayerAudioGraph()
+    graph?.setLayerState(id, next)
+    if (layerSolo === id) {
+      setLayerSolo(null)
+      graph?.setSolo(null)
+    }
   }
 
   function toggleLayerSolo(id: LayerId) {
     const next = layerSolo === id ? null : id
     setLayerSolo(next)
-    layerAudioGraphRef.current?.setSolo(id)
+    const graph = ensureLayerAudioGraph()
+    graph?.setSolo(next)
   }
 
   function resetLayerMix() {
-    setLayerControls(defaultLayerControls())
+    const defaults = defaultLayerControls()
+    setLayerControls(defaults)
     setLayerSolo(null)
-    if (layerSolo) layerAudioGraphRef.current?.setSolo(layerSolo)
+    layerAudioGraphRef.current?.setSolo(null)
     for (const layer of LAYERS) {
-      layerAudioGraphRef.current?.setLayerVolume(layer.id, 0.3)
-      layerAudioGraphRef.current?.setMuted(layer.id, false)
+      layerAudioGraphRef.current?.setLayerState(layer.id, defaults[layer.id])
     }
-    setPracticeMixMode('original')
   }
 
   function stopGuide() {
@@ -552,7 +606,22 @@ function App() {
     const context = new AudioContext()
     void context.resume()
     guideAudioRef.current = context
-    const countBuffers = guideOn ? makeFakeCountBuffers(context) : null
+    const loadController = new AbortController()
+    let countBuffers: Record<CountWord, AudioBuffer> | null = null
+    if (guideOn) {
+      setGuideLoading(true)
+      void loadCountBuffers(context, loadController.signal).then((buffers) => {
+        if (loadController.signal.aborted) return
+        countBuffers = buffers
+        setGuideLoading(false)
+        setGuideError('')
+      }).catch(() => {
+        if (loadController.signal.aborted) return
+        setGuideLoading(false)
+        setGuideError('The count voice could not load. Refresh the page and try again.')
+      })
+    }
+    const clickBuffers = makeMetronomeBuffers(context)
     const limiter = context.createDynamicsCompressor()
     limiter.threshold.value = -4
     limiter.knee.value = 6
@@ -570,33 +639,27 @@ function App() {
       if (activeSession.element.paused || now + 0.12 < effectiveFirstBeat) return
       while (effectiveFirstBeat + nextStep * period <= now + 0.12) {
         const targetTime = effectiveFirstBeat + nextStep * period
-        const countStep = countStyle === 'ta' ? makeTaPattern(nextStep, subdivision as 1 | 2 | 4) : countPattern(nextStep, subdivision as 1 | 2 | 4)
+        const countStep = countPattern(nextStep, subdivision as 1 | 2 | 4)
         const isStrongBeat = countStep.isStrong
         const startAt = context.currentTime + Math.max(0, (targetTime - now) / activeSession.element.playbackRate)
         if (metronomeOn && metronomeVolumeRef.current > 0) {
-          const oscillator = context.createOscillator()
+          const click = context.createBufferSource()
           const clickGain = context.createGain()
-          oscillator.type = 'triangle'
-          oscillator.frequency.value = isStrongBeat ? 1150 : 820
-          clickGain.gain.setValueAtTime(0.0001, startAt)
-          clickGain.gain.linearRampToValueAtTime(metronomeVolumeRef.current * (isStrongBeat ? 0.9 : 0.62), startAt + 0.002)
-          clickGain.gain.exponentialRampToValueAtTime(0.0001, startAt + Math.min(0.045, period * 0.4))
-          oscillator.connect(clickGain).connect(limiter)
-          oscillator.start(startAt)
-          oscillator.stop(startAt + Math.min(0.05, period * 0.45))
+          click.buffer = isStrongBeat ? clickBuffers.accent : clickBuffers.regular
+          clickGain.gain.setValueAtTime(metronomeVolumeRef.current * (isStrongBeat ? 0.9 : 0.7), startAt)
+          click.connect(clickGain).connect(limiter)
+          click.start(startAt)
         }
-        if (guideOn && countBuffers && guideVolumeRef.current > 0) {
+        if (guideOn && countBuffers && countStep.word && guideVolumeRef.current > 0) {
           const voice = context.createBufferSource()
           const voiceGain = context.createGain()
-          const buffer = countBuffers[countStep.syllable as CountSyllable]
+          const buffer = countBuffers[countStep.word]
           voice.buffer = buffer
-          voice.playbackRate.value = Math.min(2.7, Math.max(1, buffer.duration / Math.max(0.04, period * 0.88)))
-          voiceGain.gain.setValueAtTime(0, startAt)
-          voiceGain.gain.linearRampToValueAtTime(guideVolumeRef.current * (isStrongBeat ? 1 : 0.72), startAt + 0.004)
-          voiceGain.gain.exponentialRampToValueAtTime(0.001, startAt + Math.min(0.22, period * 0.94))
+          const availableSeconds = 60 / bpm / activeSession.element.playbackRate * 0.88
+          voice.playbackRate.value = Math.max(1, buffer.duration / Math.max(0.04, availableSeconds))
+          voiceGain.gain.setValueAtTime(guideVolumeRef.current * (isStrongBeat ? 1 : 0.86), startAt)
           voice.connect(voiceGain).connect(limiter)
           voice.start(startAt)
-          voice.stop(startAt + Math.min(buffer.duration / voice.playbackRate.value, period * 0.98))
         }
         nextStep += 1
       }
@@ -604,12 +667,13 @@ function App() {
     const timer = window.setInterval(scheduleTick, 25)
     guideTimerRef.current = timer
     return () => {
+      loadController.abort()
       window.clearInterval(timer)
       if (guideTimerRef.current === timer) guideTimerRef.current = null
       void context.close()
       if (guideAudioRef.current === context) guideAudioRef.current = null
     }
-  }, [guideOn, metronomeOn, session, bpm, effectiveFirstBeat, subdivision, countStyle])
+  }, [guideOn, metronomeOn, session, bpm, effectiveFirstBeat, subdivision])
 
   function adjustBeatOffset(delta: number) {
     if (effectiveFirstBeat === undefined) return
@@ -760,7 +824,7 @@ function App() {
 
       {session && <nav className="mode-tabs" aria-label="Practice mode"><button type="button" className={activeMode === 'beginner' ? 'is-active' : ''} onClick={() => setActiveMode('beginner')}>Beginner mode</button><button type="button" className={activeMode === 'intermediate' ? 'is-active' : ''} onClick={() => setActiveMode('intermediate')}>Intermediate mode</button><button type="button" className={activeMode === 'advanced' ? 'is-active' : ''} onClick={() => setActiveMode('advanced')}>Advanced mode</button></nav>}
 
-      {session && analysis && activeMode === 'advanced' && <section className="advanced-model-actions"><div><span className="track-eyebrow">ADVANCED ANALYSIS</span><h2>Drums and pitched layers</h2><p>Run local Demucs to estimate kick, snare, hi-hat and other drum attacks, then Basic Pitch on the bass and accompaniment stems. Drum categories use spectral rules, and accompaniment instruments are not individually identified.</p></div><button className="secondary-button" type="button" onClick={() => void tryTranscribeStems()} disabled={stemPitchBusy || separationBusy}>{stemPitchBusy ? 'Analyzing locally…' : 'Analyze musical details'}</button>{stemPitchBusy && <button className="secondary-button" type="button" onClick={() => { stemPitchAbortRef.current?.abort(); separationAbortRef.current?.abort(); setStemPitchMessage('Advanced analysis cancelled.') }}>Cancel</button>}{stemPitchMessage && <p className="model-status" role="status">{stemPitchMessage}</p>}</section>}
+      {session && analysis && activeMode === 'advanced' && <section className="advanced-model-actions"><div><span className="track-eyebrow">ADVANCED ANALYSIS</span><h2>Drums and pitched layers</h2><p>Run local Demucs to estimate kick, snare, hi-hat and other drum attacks, then Basic Pitch on the bass and accompaniment stems. Drum categories use spectral rules, and accompaniment instruments are not individually identified.</p></div><button className="secondary-button" type="button" onClick={() => void tryTranscribeStems()} disabled={stemPitchBusy || separationBusy}>{stemPitchBusy ? 'Analyzing locally…' : 'Analyze musical details'}</button>{stemPitchBusy && <button className="secondary-button" type="button" onClick={() => { stemPitchAbortRef.current?.abort(); separationAbortRef.current?.abort(); setStemPitchMessage('Advanced analysis cancelled.') }}>Cancel</button>}{stemPitchMessage && <p className="model-status" role="status">{stemPitchMessage}</p>}{separationError && <p className="model-status" role="alert">{separationError}</p>}</section>}
 
       {session && analysis && activeMode === 'advanced' && <VerticalMusicTimeline summary={analysis} notes={aiNotes} stemActivity={stemActivity} drumHits={drumHits} media={session.element} onSeek={(seconds) => seek(String(seconds))} loop={loopStart !== null && loopEnd !== null ? { start: loopStart, end: loopEnd } : null} />}
 
@@ -782,21 +846,19 @@ function App() {
           <EnergyTimeline summary={analysis} currentTime={currentTime} onSeek={(time) => seek(String(time))} firstBeatSeconds={effectiveFirstBeat} bpm={bpm} />
           <div className="practice-tools">
             <div className="practice-tool"><h3>Practice a short pattern</h3><div className="control-row"><label htmlFor="pattern-length">Pattern</label><select id="pattern-length" value={pattern} onChange={(event) => setPattern(Number(event.currentTarget.value))}><option value="4">4 beats</option><option value="8">8 beats</option><option value="16">16 beats</option></select><button type="button" className="secondary-button" onClick={startLoop}>Set loop here</button><button type="button" className="text-button" onClick={() => { loopRef.current = null; setLoopStart(null); setLoopEnd(null) }} disabled={loopStart === null}>Clear loop</button></div>{loopStart !== null && loopEnd !== null && <p className="loop-state">Loop {formatTime(loopStart)} – {formatTime(loopEnd)}</p>}</div>
-            <div className="practice-tool"><h3>Practice sounds</h3><div className="control-row"><label htmlFor="subdivision">Subdivision</label><select id="subdivision" value={subdivision} onChange={(event) => setSubdivision(Number(event.currentTarget.value))}><option value="1">Quarter notes</option><option value="2">Eighth notes</option><option value="4">Sixteenth notes</option></select><label htmlFor="count-style">Count style</label><select id="count-style" value={countStyle} onChange={(event) => setCountStyle(event.currentTarget.value as 'numbers' | 'ta')}><option value="numbers">1 and 2 and…</option><option value="ta">1 ta ta ta…</option></select></div><div className="sound-volume-row"><button type="button" className={metronomeOn ? 'secondary-button is-active' : 'secondary-button'} onClick={() => setMetronomeOn(!metronomeOn)}>{metronomeOn ? 'Metronome on' : 'Metronome off'}</button><label htmlFor="metronome-volume">Click volume <strong>{Math.round(metronomeVolume * 100)}%</strong></label><input id="metronome-volume" type="range" min="0" max="1" step="0.01" value={metronomeVolume} onChange={(event) => { const volume = Number(event.currentTarget.value); metronomeVolumeRef.current = volume; setMetronomeVolume(volume) }} aria-label="Metronome volume" /></div><div className="sound-volume-row"><button type="button" className={guideOn ? 'secondary-button is-active' : 'secondary-button'} onClick={() => setGuideOn(!guideOn)}>{guideOn ? 'Count guide on' : 'Count guide off'}</button><label htmlFor="guide-volume">Voice-like volume <strong>{Math.round(guideVolume * 100)}%</strong></label><input id="guide-volume" type="range" min="0" max="1" step="0.01" value={guideVolume} onChange={(event) => { const volume = Number(event.currentTarget.value); guideVolumeRef.current = volume; setGuideVolume(volume) }} aria-label="Voice-like count guide volume" /></div><p className="loop-state">The count guide uses locally synthesized formant-shaped syllables, not a person, AI, system TTS, recording, or network service. Beat one is accented. A compressor controls peaks when both guides play together.</p></div>
+            <div className="practice-tool"><h3>Practice sounds</h3><div className="control-row"><label htmlFor="subdivision">Metronome subdivision</label><select id="subdivision" value={subdivision} onChange={(event) => setSubdivision(Number(event.currentTarget.value))}><option value="1">Quarter notes</option><option value="2">Eighth notes</option><option value="4">Sixteenth notes</option></select></div><div className="sound-volume-row"><button type="button" className={metronomeOn ? 'secondary-button is-active' : 'secondary-button'} onClick={() => setMetronomeOn(!metronomeOn)}>{metronomeOn ? 'Metronome on' : 'Metronome off'}</button><label htmlFor="metronome-volume">Click volume <strong>{Math.round(metronomeVolume * 100)}%</strong></label><input id="metronome-volume" type="range" min="0" max="1" step="0.01" value={metronomeVolume} onChange={(event) => { const volume = Number(event.currentTarget.value); metronomeVolumeRef.current = volume; setMetronomeVolume(volume) }} aria-label="Metronome volume" /></div><div className="sound-volume-row"><button type="button" className={guideOn ? 'secondary-button is-active' : 'secondary-button'} onClick={() => { setGuideOn(!guideOn); setGuideLoading(false); setGuideError('') }}>{guideOn ? 'Count guide on' : 'Count guide off'}</button><label htmlFor="guide-volume">Count voice volume <strong>{Math.round(guideVolume * 100)}%</strong></label><input id="guide-volume" type="range" min="0" max="1" step="0.01" value={guideVolume} onChange={(event) => { const volume = Number(event.currentTarget.value); guideVolumeRef.current = volume; setGuideVolume(volume) }} aria-label="Count voice volume" /></div>{guideLoading && <p className="model-status" role="status">Loading count voice…</p>}{guideError && <p className="analysis-error" role="alert">{guideError}</p>}<p className="loop-state">The count voice says one, two, three, four, five, six, seven, eight on the beats, then repeats. Metronome subdivisions add clicks only. The eight short voice clips are bundled locally, with no speech model or network call during practice.</p></div>
           </div>
         </>}
       </section>}
 
       {session && activeMode === 'intermediate' && analysis && <section className="beginner-panel intermediate-section" aria-label="Intermediate layer practice">
         <div className="section-heading"><div><span className="track-eyebrow">INTERMEDIATE MODE</span><h2>Estimated musical layers</h2></div><span className="analysis-badge">FREQUENCY APPROXIMATION</span></div>
-        <LayerPracticePanel summary={analysis} currentTime={currentTime} controls={layerControls} setControl={updateLayerControl} mode={mixMode} setMode={setPracticeMixMode} solo={layerSolo} toggleSolo={toggleLayerSolo} reset={resetLayerMix} masterVolume={musicVolume} onA={() => setPracticeMixMode(mixMode === 'original' ? 'layers' : 'original')} onSeparate={() => void trySeparateStems()} separationBusy={separationBusy} separationMessage={separationMessage} separationError={separationError} separated={Boolean(separationResult)} stemControls={stemControls} setStemControl={setStemControl} />
+        <LayerPracticePanel summary={analysis} currentTime={currentTime} controls={layerControls} setControl={updateLayerControl} setVolume={setLayerVolume} toggleMute={toggleLayerMuteControl} mode={mixMode} setMode={setPracticeMixMode} solo={layerSolo} toggleSolo={toggleLayerSolo} reset={resetLayerMix} onSeparate={() => void trySeparateStems()} separationBusy={separationBusy} separationMessage={separationMessage} separationError={separationError} separated={Boolean(separationResult)} stemActivity={stemActivity} stemControls={stemControls} stemSolo={stemSolo} setStemVolume={setStemVolume} toggleStemMute={toggleStemMute} toggleStemSolo={toggleStemSolo} resetStemMix={resetStemMix} />
       </section>}
 
       {session && activeMode === 'intermediate' && !analysis && analysisProgress && <section className="beginner-panel" aria-live="polite"><p className="model-status">{analysisProgress.stage} · {Math.round((analysisProgress.progress ?? 0) * 100)}%</p><button type="button" className="secondary-button" onClick={cancelAnalysis}>Cancel analysis</button></section>}
 
       {session && analysis && activeMode === 'advanced' && <FullSongStructure summary={analysis} currentTime={currentTime} onSeek={(seconds) => seek(String(seconds))} />}
-      {session && analysis && activeMode === 'advanced' && <section className="advanced-events"><h2>Upcoming musical events</h2><p>These cues come from pre-analysis of this file. They are estimates, not predictions of unknown audio.</p>{analysis.events.filter((event) => event.timestamp >= currentTime - 1).slice(0, 12).map((event) => <button type="button" key={event.id} onClick={() => seek(String(event.timestamp))}><strong>{Math.abs(event.timestamp - currentTime) <= 1 ? 'CURRENT' : 'UPCOMING'}</strong><span>{event.section ?? event.type.replace('-', ' ')}</span><small>{event.timestamp.toFixed(1)}s{event.confidence === undefined ? ' · estimated' : ` · approx. ${Math.round(event.confidence * 100)}%`}</small></button>)}</section>}
-
       {session && analysis && activeMode !== 'beginner' && <MelodyAnalysisPanel summary={analysis} currentTime={currentTime} modelContour={aiMelodyContour} busy={melodyBusy} progress={melodyProgress} message={melodyMessage} onAnalyze={() => void tryBasicPitch()} onCancel={cancelMelodyAnalysis} />}
 
       <section className="phase-note"><span className="phase-note-number">06–17</span><p><strong>Estimated musical structure and melody contour.</strong> Frequency layers are not isolated instruments, and pitch or event timing can be uncertain in dense mixes. Use these cues as practice aids.</p></section>

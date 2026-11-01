@@ -27,7 +27,7 @@ The existing application is React 19 + TypeScript + Vite. It runs in the browser
 - Baseline `npm run build` passed before modifications.
 - `npm test`: five focused tests passed for provenance/ordering, invalid-note rejection, fixed-playhead time mapping, new event lanes, and bounded section inference. Python's synthetic kick/snare/hi-hat fixture and syntax compilation passed.
 - `npm run build`: TypeScript and Vite passed after changes.
-- The browser loaded a local `luv.aac` test track. Its browser duration displayed about 70 seconds. The DSP view rendered real beat, transient, and energy-change events; the new vertical view showed those three lanes.
+- The browser loaded `/Users/js/Downloads/luv.aac`. Its browser duration displayed about 70 seconds. The DSP view rendered real beat, transient, and energy-change events; the new vertical view showed those three lanes.
 - In the browser, playback advanced the vertical time readout; seek to the end and back to zero updated it immediately; speed was changed to 0.95×.
 - The installed local Demucs MLX service returned four stems for this file. After loading their buffers, the event view displayed vocal, drum, bass, and other stem activity lanes. These are **stem-energy estimates**, not verified instrument-presence classifications.
 - The installed local Basic Pitch service processed the same file. The pitched-note lane appeared from its returned note events. The model amplitude is stored as acoustic strength, not as a verified MIDI velocity or calibrated confidence.

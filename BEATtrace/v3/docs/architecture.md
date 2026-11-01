@@ -53,11 +53,11 @@ The energy timeline in `src/ui/EnergyTimeline.tsx` draws normalized energy and f
 
 ## Phase 4: Beginner Mode
 
-The player starts analysis after opening a file and keeps playback available during analysis. Beginner Mode shows the tempo estimate, confidence indicators, beat and measure position, adjustable BPM, tap alignment, 50 ms earlier/later correction, reset/re-analysis controls, practice patterns of 4/8/16 beats, and a loop set at the current position. An uploaded-music volume control changes only the media element volume, initially 45%. `src/audio/fakeVoice.ts` synthesizes short formant-shaped syllable buffers locally for “one, two, three, four,” eighth/sixteenth subdivisions, and the “1 ta ta ta” style. This is an intentionally artificial voice-like effect, not a human recording or natural-language voice model.
+The player starts analysis after opening a file and keeps playback available during analysis. Beginner Mode shows the tempo estimate, confidence indicators, beat and measure position, adjustable BPM, tap alignment, 50 ms earlier/later correction, reset/re-analysis controls, practice patterns of 4/8/16 beats, and a loop set at the current position. An uploaded-music volume control changes only the media element volume, initially 45%. `src/audio/practiceSounds.ts` loads eight short locally bundled speech clips for “one” through “eight” and repeats them on quarter-note beats. Eighth/sixteenth subdivisions apply only to the metronome click. The voice was generated offline; no model runs in the browser.
 
-Count samples and optional metronome clicks are scheduled against `AudioContext.currentTime` with a 120 ms look-ahead and mapped to media playback time; the scheduler checks every 25 ms and handles loop rewinds. Beat one is louder. Music, metronome clicks, and voice-like counts have independent volume controls; the two practice signals pass through a compressor. The guide uses no system TTS or network service.
+Count samples and optional metronome clicks are scheduled against `AudioContext.currentTime` with a 120 ms look-ahead and mapped to media playback time; the scheduler checks every 25 ms and handles loop rewinds. Beats one and five are accented. Music, metronome clicks, and counts have independent volume controls; the two practice signals pass through a compressor. The guide uses no runtime TTS or remote service.
 
-The app treats four beats as a practice grid rather than verified meter. Users can correct the first-beat phase. The synthetic voice-like syllables are intentionally not presented as real human speech; see the validation record for limitations.
+The app treats four beats as a practice grid rather than verified meter. Users can correct the first-beat phase. The count voice is generated speech, not a human recording; see `public/audio/counts/README.md` for attribution.
 
 ## Current project structure
 

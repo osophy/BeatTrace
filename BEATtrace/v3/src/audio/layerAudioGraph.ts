@@ -1,4 +1,5 @@
 import type { LayerId } from '../analysis/layers'
+import { effectiveLayerVolume, type LayerAudioState } from './layerMixState'
 
 export type MixMode = 'original' | 'layers' | 'separated'
 
@@ -17,8 +18,7 @@ export class LayerAudioGraph {
   private readonly originalGain: GainNode
   private readonly layerGains = new Map<LayerId, GainNode>()
   private readonly compressor: DynamicsCompressorNode
-  private readonly volumes = new Map<LayerId, number>()
-  private readonly muted = new Map<LayerId, boolean>()
+  private readonly layerStates = new Map<LayerId, LayerAudioState>()
   private solo: LayerId | null = null
   private mode: MixMode = 'original'
 
@@ -43,8 +43,7 @@ export class LayerAudioGraph {
       gain.gain.value = 0
       this.source.connect(filter).connect(gain).connect(this.compressor)
       this.layerGains.set(id, gain)
-      this.volumes.set(id, 0.3)
-      this.muted.set(id, false)
+      this.layerStates.set(id, { volume: 0.3, lastNonZeroVolume: 0.3, muted: false })
     }
     this.compressor.connect(this.context.destination)
     this.context.resume().catch(() => undefined)
@@ -68,20 +67,14 @@ export class LayerAudioGraph {
     this.applyMode()
   }
 
-  setLayerVolume(id: LayerId, value: number) {
-    this.volumes.set(id, clamp(value, 0, 1))
-    this.applyLayerGains()
-  }
-
-  setMuted(id: LayerId, muted: boolean) {
-    this.muted.set(id, muted)
+  setLayerState(id: LayerId, state: LayerAudioState) {
+    this.layerStates.set(id, { volume: state.volume, lastNonZeroVolume: state.lastNonZeroVolume, muted: state.muted })
     this.applyLayerGains()
   }
 
   setSolo(id: LayerId | null) {
-    this.solo = this.solo === id ? null : id
+    this.solo = id
     this.applyLayerGains()
-    return this.solo
   }
 
   private applyMode() {
@@ -93,8 +86,9 @@ export class LayerAudioGraph {
   private applyLayerGains() {
     const now = this.context.currentTime
     for (const [id, gain] of this.layerGains) {
-      const allowed = this.mode === 'layers' && !this.muted.get(id) && (!this.solo || this.solo === id)
-      gain.gain.setTargetAtTime(allowed ? this.masterVolume * (this.volumes.get(id) ?? 0) * 0.52 : 0, now, 0.025)
+      const state = this.layerStates.get(id)
+      const level = this.mode === 'layers' && state ? effectiveLayerVolume(state, id, this.solo) : 0
+      gain.gain.setTargetAtTime(this.masterVolume * level * 0.52, now, 0.025)
     }
   }
 

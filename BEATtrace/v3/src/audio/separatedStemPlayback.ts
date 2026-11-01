@@ -1,7 +1,9 @@
 import type { SeparatedStem, SeparatedStemId } from '../analysis/demucsAdapter'
 import type { StemActivityInterval } from '../domain/musicTimeline'
+import type { LayerAudioState } from './layerMixState'
+import { effectiveStemVolume } from './stemMixState'
 
-type StemState = { buffer: AudioBuffer; gain: GainNode; volume: number; muted: boolean }
+type StemState = { buffer: AudioBuffer; gain: GainNode } & LayerAudioState
 
 /** Plays model stems against the original media element's shared playhead. */
 export class SeparatedStemPlayback {
@@ -10,6 +12,7 @@ export class SeparatedStemPlayback {
   private enabled = false
   private disposed = false
   private masterVolume = 1
+  private solo: SeparatedStemId | null = null
   private readonly onPlay = () => { if (this.enabled) void this.startAtMediaTime() }
   private readonly onPause = () => this.stopSources()
   private readonly onSeeking = () => this.stopSources()
@@ -33,7 +36,8 @@ export class SeparatedStemPlayback {
       const buffer = await this.context.decodeAudioData(await response.arrayBuffer())
       const gain = this.context.createGain()
       gain.connect(this.context.destination)
-      this.stems.set(stem.id, { buffer, gain, volume: 0.75, muted: false })
+      this.stems.set(stem.id, { buffer, gain, volume: 0.75, lastNonZeroVolume: 0.75, muted: false })
+      this.applyGain(stem.id)
     }
     if (this.enabled && !this.media.paused) await this.startAtMediaTime()
   }
@@ -79,25 +83,31 @@ export class SeparatedStemPlayback {
     else this.stopSources()
   }
 
-  setVolume(id: SeparatedStemId, volume: number) {
+  setStemState(id: SeparatedStemId, state: LayerAudioState) {
     const stem = this.stems.get(id)
-    if (stem) { stem.volume = Math.max(0, Math.min(1, volume)); this.applyGain(stem) }
+    if (stem) {
+      stem.volume = state.volume
+      stem.lastNonZeroVolume = state.lastNonZeroVolume
+      stem.muted = state.muted
+      this.applyGain(id)
+    }
   }
 
-  setMuted(id: SeparatedStemId, muted: boolean) {
-    const stem = this.stems.get(id)
-    if (stem) { stem.muted = muted; this.applyGain(stem) }
+  setSolo(id: SeparatedStemId | null) {
+    this.solo = id
+    for (const stemId of this.stems.keys()) this.applyGain(stemId)
   }
 
   setMasterVolume(value: number) {
     this.masterVolume = Math.max(0, Math.min(1, value))
-    for (const stem of this.stems.values()) {
-      this.applyGain(stem)
-    }
+    for (const id of this.stems.keys()) this.applyGain(id)
   }
 
-  private applyGain(stem: StemState) {
-    stem.gain.gain.setTargetAtTime(stem.muted ? 0 : stem.volume * this.masterVolume, this.context.currentTime, 0.015)
+  private applyGain(id: SeparatedStemId) {
+    const stem = this.stems.get(id)
+    if (!stem) return
+    const level = effectiveStemVolume(stem, id, this.solo)
+    stem.gain.gain.setTargetAtTime(level * this.masterVolume, this.context.currentTime, 0.015)
   }
 
   private async startAtMediaTime() {

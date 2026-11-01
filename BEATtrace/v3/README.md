@@ -1,4 +1,6 @@
-# BeatTrace v3
+# BeatTrace
+
+This `v3` folder was synchronized with the current local source on 2026-11-01. It is a development version. The count voice plays, but its timing accuracy has not passed user acceptance; tempo and first-beat alignment can require manual correction.
 
 BeatTrace helps freestyle dancers notice a song's pulse, layers, and changes while leaving movement choices to the dancer.
 
@@ -6,10 +8,10 @@ BeatTrace helps freestyle dancers notice a song's pulse, layers, and changes whi
 
 - Local audio file selection, drag and drop, playback, seek, removal, and MP4-family audio extraction.
 - Traditional browser DSP for estimated pulse, first beat, energy, density, transients, silence, frequency bands, and melody contour.
-- Beginner Mode with tempo adjustment, tap alignment, beat nudges, 4/8/16-beat loops, metronome, and a synthetic voice-like count guide.
-- Intermediate Mode with five approximate frequency layers, show/hide, solo, mute, volume, opacity, color, A/B comparison, and reset.
-- Optional local Demucs four-stem separation for vocals, drums, bass, and other accompaniment, with independent listening controls.
-- Advanced Mode with a full-song energy/density overview, estimated section cues, a moving event timeline, and pre-analyzed events. The moving visualization is shown only in Advanced Mode.
+- Beginner Mode with tempo adjustment, tap alignment, beat nudges, 4/8/16-beat loops, a damped tap metronome, and a local eight-count voice guide.
+- Intermediate Mode with a single listening-source selector for the original mix, five approximate DSP frequency layers, and optional AI stems. DSP layers keep independent solo, mute, volume, visibility, opacity, color, and reset controls.
+- Optional local Demucs four-stem separation for vocals, drums, bass, and other accompaniment, with a synchronized four-track activity view and independent solo, mute, volume, and reset controls. Only the selected source plays; switching sources preserves each mix's settings.
+- Advanced Mode with a full-song energy/density overview, estimated section cues, and a moving event timeline. The moving visualization is shown only in Advanced Mode.
 - Optional local BeatNet beat analysis and Spotify Basic Pitch melody contour. Traditional DSP remains available if either local service is missing.
 - Advanced event view with a fixed lower-middle playhead, downward-moving beat/onset/note/stem events, zoom, lane focus, and whole-song navigation. A 0.5–1.5× practice-speed control uses the same playback clock.
 - The Advanced **Analyze musical details** action runs Demucs and then Basic Pitch on the bass and other stems. It adds estimated kick, snare, hi-hat, and unclassified percussion lanes, separate bass and accompaniment note lanes, pitch-positioned MIDI-style note bars, and broad acoustic section labels.
@@ -18,7 +20,7 @@ All rhythmic, layer, section, pitch, and upcoming-event cues are estimates. Freq
 
 Drum categories use spectral rules on the separated drum stem and have not been checked against labeled real recordings. Basic Pitch estimates notes within bass and accompaniment stems; it cannot name every instrument inside accompaniment. Section labels describe energy and density changes rather than verified verse, chorus, or bridge. MIDI-style bars are a visual guide, not an exported MIDI file or a validated score. See [the V2 implementation audit](docs/v2-implementation-audit.md).
 
-The count guide is an explicitly artificial, locally synthesized voice-like timbre. It does not use a person, AI voice, system TTS, recording, or network service.
+The count guide uses eight short, locally bundled speech clips saying “one” through “eight” and repeats on the beats. Metronome subdivisions add clicks without extra spoken syllables. The clips were generated offline with the Piper Kristin voice; the speech model is not shipped or run during practice. See `public/audio/counts/README.md` for source and attribution.
 
 ## Run locally
 
@@ -29,7 +31,9 @@ npm ci
 npm run dev
 ```
 
-The development page is available at [http://127.0.0.1:5173/](http://127.0.0.1:5173/) while `npm run dev` is running. Optional AI services run separately, using the commands below.
+On this development Mac, the Vite webpage is also registered as a current-login-session service using `scripts/com.beattrace.local-web.plist`, so [http://127.0.0.1:5173/](http://127.0.0.1:5173/) remains available after this Codex turn. It is local to this Mac and stops at logout/restart. To stop it manually: `launchctl bootout gui/$(id -u)/com.beattrace.local-web`. Optional AI services are separate and can be started with the commands below when needed.
+
+For the two AI buttons on this development Mac, run `./scripts/run-local-ai.sh` in Terminal and keep that window open during analysis. Press Control-C to stop them. The script uses the existing local Python environments; it does not install or upload anything. The webpage can remain available while these optional AI services are stopped; in that case, **Analyze musical details** cannot run until the script is started.
 
 ## Optional local music separation
 
@@ -42,6 +46,8 @@ conda create -y -n beattrace-separation python=3.10 pip
 conda run -n beattrace-separation python -m pip install -r local-model/requirements-separation.txt
 DEMUCS_MLX_CACHE_DIR=local-model/.cache/demucs-mlx conda run -n beattrace-separation python local-model/separation_service.py
 ```
+
+On this development checkout, the same commands are available through the isolated ignored environment at `local-model/.venv-separation/bin/python`.
 
 The service binds only to loopback at `http://127.0.0.1:8767`. It keeps the model loaded to reduce repeat-analysis delay, and temporary stems are removed when the loaded track is cleared; abandoned temporary results are pruned after six hours. The web player decodes source audio locally to WAV before sending it to the local service. Model weights are downloaded separately on first use. Checkpoint licensing is not yet cleared for commercial distribution: Demucs upstream states that the model-weight license is unclear, even though its code is MIT licensed. Do not ship model weights or sell access to this model until that is resolved. See the [official Demucs model/license notes](https://github.com/adefossez/demucs#license) and the [demucs-mlx project](https://pypi.org/project/demucs-mlx/).
 
