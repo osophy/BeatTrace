@@ -1,0 +1,5 @@
+node_modules/
+dist/
+local-model/.venv-separation/
+local-model/.cache/
+local-model/__pycache__/

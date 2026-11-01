@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.beattrace.local-web</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/js/.nvm/versions/node/v22.22.1/bin/node</string>
+    <string>/Users/js/Documents/ChatGPT/Beattrace 2/node_modules/vite/bin/vite.js</string>
+    <string>--host</string><string>127.0.0.1</string>
+    <string>--port</string><string>5173</string>
+  </array>
+  <key>WorkingDirectory</key><string>/Users/js/Documents/ChatGPT/Beattrace 2</string>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/private/tmp/beattrace-local-web.log</string>
+  <key>StandardErrorPath</key><string>/private/tmp/beattrace-local-web.log</string>
+</dict>
+</plist>
